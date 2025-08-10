@@ -1,0 +1,33 @@
+{
+  "name": "akeeon-t",
+  "version": "1.0.0",
+  "description": "SNoP 매출 데이터 Text-to-SQL 임베더블 챗봇",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "cd frontend && npm start",
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && pip install -r requirements.txt",
+    "setup:db": "cd database && psql -U postgres -d snop_db -f schema.sql && psql -U postgres -d snop_db -f sample_data.sql",
+    "test": "echo \"테스트를 실행합니다\" && exit 1",
+    "lint": "cd frontend && npm run lint",
+    "format": "cd frontend && npm run format"
+  },
+  "keywords": [
+    "chatbot",
+    "text-to-sql",
+    "data-analysis",
+    "snoop",
+    "sales-data"
+  ],
+  "author": "AKeeON Team",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  }
+}
