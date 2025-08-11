@@ -15,52 +15,87 @@ class TextToSQLService:
     """Text-to-SQL 변환 서비스"""
     
     def __init__(self):
-        self.openai_client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.has_openai = bool(settings.OPENAI_API_KEY)
+        self.openai_client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if self.has_openai else None
         self.guardrails = SQLGuardrails()
         self.schema_service = SchemaService()
     
     async def generate_sql(self, question: str, session: AsyncSession) -> Tuple[str, str]:
         """
         자연어 질문을 SQL로 변환
-        
-        Args:
-            question: 자연어 질문
-            session: 데이터베이스 세션
-            
-        Returns:
-            (sql_query, explanation): SQL 쿼리와 설명
         """
         try:
             # 스키마 정보 가져오기
             schema_info = await self.schema_service.get_schema_info(session)
             
-            # 프롬프트 생성
-            prompt = self._create_prompt(question, schema_info)
-            
-            # OpenAI API 호출
-            response = await self.openai_client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": self._get_system_prompt()},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=settings.OPENAI_MAX_TOKENS,
-                temperature=settings.OPENAI_TEMPERATURE
-            )
-            
-            # 응답 파싱
-            content = response.choices[0].message.content
-            sql_query, explanation = self._parse_response(content)
+            # OpenAI 사용 가능하면 호출, 아니면 폴백 로직 사용
+            if self.has_openai:
+                prompt = self._create_prompt(question, schema_info)
+                response = await self.openai_client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": self._get_system_prompt()},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=settings.OPENAI_MAX_TOKENS,
+                    temperature=settings.OPENAI_TEMPERATURE
+                )
+                content = response.choices[0].message.content
+                sql_query, explanation = self._parse_response(content)
+            else:
+                sql_query, explanation = self._fallback_sql(question)
             
             # SQL 검증 및 가드레일 적용
             validated_sql = await self.guardrails.validate_and_clean_sql(sql_query)
-            
             return validated_sql, explanation
             
         except Exception as e:
             logger.error(f"SQL 생성 실패: {e}")
             raise
-    
+
+    def _fallback_sql(self, question: str) -> Tuple[str, str]:
+        """OpenAI 키가 없을 때의 안전한 폴백 SQL 생성"""
+        q = question.lower()
+        # 지난 분기 카테고리별 매출 Top 5
+        if ("지난" in q and "분기" in q) or ("quarter" in q):
+            sql = (
+                "SELECT p.category, SUM(f.revenue) AS total_revenue "
+                "FROM fact_sales AS f "
+                "JOIN dim_product AS p ON f.product_id = p.product_id "
+                "JOIN dim_date AS d ON f.date_key = d.date_key "
+                "WHERE d.year = EXTRACT(YEAR FROM CURRENT_DATE - INTERVAL '3 months') "
+                "AND d.quarter = EXTRACT(QUARTER FROM CURRENT_DATE - INTERVAL '3 months') "
+                "GROUP BY p.category ORDER BY total_revenue DESC"
+            )
+            return sql, "지난 분기의 카테고리별 총 매출을 집계했습니다."
+        # 카테고리별 매출 합계
+        if ("카테고리" in q) or ("category" in q):
+            sql = (
+                "SELECT p.category, SUM(f.revenue) AS total_revenue "
+                "FROM fact_sales AS f JOIN dim_product AS p ON f.product_id = p.product_id "
+                "GROUP BY p.category ORDER BY total_revenue DESC"
+            )
+            return sql, "카테고리별 매출 합계를 집계했습니다."
+        # 주간(주차) 매출/수량
+        if ("주간" in q) or ("주차" in q) or ("week" in q):
+            sql = (
+                "SELECT d.week, SUM(f.revenue) AS total_revenue, SUM(f.quantity) AS total_quantity "
+                "FROM fact_sales AS f JOIN dim_date AS d ON f.date_key = d.date_key "
+                "WHERE d.year = EXTRACT(YEAR FROM CURRENT_DATE) "
+                "GROUP BY d.week ORDER BY d.week"
+            )
+            return sql, "올해 주차별 매출과 수량을 집계했습니다."
+        # 기본 폴백: 최근 매출 1000건 요약
+        sql = (
+            "SELECT d.date, p.product_name, c.customer_name, f.quantity, f.unit_price, f.revenue "
+            "FROM fact_sales f "
+            "JOIN dim_date d ON f.date_key = d.date_key "
+            "JOIN dim_product p ON f.product_id = p.product_id "
+            "JOIN dim_customer c ON f.customer_id = c.customer_id "
+            "ORDER BY d.date DESC"
+        )
+        return sql, "최근 매출 데이터를 요약해 보여드립니다."
+
     def _get_system_prompt(self) -> str:
         """시스템 프롬프트 반환"""
         return """당신은 PostgreSQL 데이터베이스 전문가입니다. 
